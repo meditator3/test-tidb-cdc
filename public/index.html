@@ -7,14 +7,15 @@
     <h1>Simple Login</h1>
     
     <h2>Register</h2>
-    <form method="POST" action="/register">
+    <form method="POST" action="/api/register">
         Username: <input name="username" required><br><br>
         Password: <input name="password" type="password" required><br><br>
+        Email: <input name="email" type="email" required><br><br>
         <button>Register</button>
     </form>
     
     <h2>Login</h2>
-    <form method="POST" action="/login">
+    <form method="POST" action="/api/login">
         Username: <input name="username" required><br><br>
         Password: <input name="password" type="password" required><br><br>
         <button>Login</button>
