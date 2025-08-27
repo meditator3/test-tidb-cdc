@@ -3,6 +3,13 @@ const mysql = require('mysql2/promise');
 const path = require('path');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
+const { Kafka } = require('kafkajs');
+const log4js = require("log4js");
+
+
+const logger = log4js.getLogger("userActivity");
+const cdcLogger = log4js.getLogger("cdc")
+logger.level = "info";
 
 const app = express();
 app.use(express.urlencoded({ extended: true }));
@@ -10,6 +17,56 @@ app.use(express.static('public'));
 
 const JWT_SECRET = 'some-secret';
 
+// log4js setup
+log4js.configure({
+  appenders: { out: { type: "stdout" } },
+  categories: {
+    default: { appenders: ["out"], level: "info" },
+    userActivity: { appenders: ["out"], level: "info" },
+    cdc: { appenders: ["out"], level: "info" }
+  }
+});
+
+// kafka consumer
+const kafka = new Kafka({ clientId: "cdc-consumer", brokers: ["kafka:9092"] });
+const consumer = kafka.consumer({ groupId: "cdc-group" });
+
+// wait for kafka to see topic+retries
+async function connectKafka(retries = 10) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      await consumer.connect();
+      console.log("Kafka connected!");
+      return;
+    } catch (err) {
+      console.log("Kafka not ready, retrying in 3s...");
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+  throw new Error("Could not connect to Kafka");
+}
+
+async function startConsumer() {
+  await connectKafka(); // retries inside here
+  await consumer.subscribe({ topic: "tidb_changes", fromBeginning: true });
+
+  await consumer.run({
+    eachMessage: async ({ topic, partition, message }) => {
+      try {
+        const event = JSON.parse(message.value.toString());
+        logger.info({ event });
+        cdcLogger.info({
+          timestamp: new Date().toISOString(),
+          event
+        });
+      } catch (err) {
+        logger.error("Failed to parse CDC message", err);
+      }
+    }
+  });
+}
+
+startConsumer().catch(console.error);
 
 // start connection with testdb 
 async function getConnection() {
@@ -122,7 +179,7 @@ app.post('/api/register', async (req, res) => {
         <head><title>Registration</title></head>
         <body>
           <h1>✅ Registration Successful</h1>
-          <p>You can now <a href="/login.html">log in</a>.</p>
+          <p>You can now <a href="/api/login.html">log in</a>.</p>
         </body>
       </html>
     `);
@@ -182,7 +239,9 @@ app.post('/api/login', async (req, res) => {
       'INSERT INTO user_tokens (user_id, token, expires_at) VALUES (?, ?, ?)',
       [user.id, token, expiresAt]
     );
-    res.setHeader('Authorization', `Bearer ${token}`);
+    res.setHeader('Authorization', `Bearer ${token}`); // << the jwt sets at header
+    logger.info({ userId: user.id, action: 'login_success' }); // <<log from cdc
+    
     await connection.end();
     
     res.send(`
